@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html;charset=UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Aplikasi berbagi cerita dengan lokasi">
+    
+    <!-- PWA Meta Tags -->
+    <meta name="theme-color" content="#ffffff"/>
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black">
+    <meta name="apple-mobile-web-app-title" content="Story App">
+    
+    <!-- Manifest -->
+    <link rel="manifest" href="/manifest.json">
+    <link rel="shortcut icon" href="/favicon.png" type="image/x-icon">
+    <link rel="apple-touch-icon" href="/public/images/logo.png">
+
+    <title>Story App - Berbagi Cerita</title>
+    
+    <!-- Styles -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="/styles/styles.css">
+    
+    <!-- Preload critical resources -->
+    <link rel="preload" href="/scripts/index.js" as="script">
+    <link rel="preload" href="/public/images/logo.png" as="image">
+  </head>
+  <body>
+    <!-- Application Shell -->
+    <div id="app-shell">
+      <a href="#main-content" class="skip-link" aria-label="Skip to main content">Skip to Content</a>
+      
+      <header role="banner">
+        <div class="main-header container">
+          <a class="brand-name" href="#/" aria-label="Story App Home">
+            Story App
+          </a>
+
+          <nav id="navigation-drawer" class="navigation-drawer" aria-label="Main navigation">
+            <ul id="nav-list" class="nav-list" role="menubar">
+              <li role="none"><a href="#/" role="menuitem">Home</a></li>
+              <li role="none"><a href="#/about" role="menuitem">About</a></li>
+              <li role="none"><a href="#/login" role="menuitem">Login</a></li>
+            </ul>
+          </nav>
+
+          <button 
+            id="drawer-button" 
+            class="drawer-button" 
+            aria-label="Toggle navigation menu"
+            aria-expanded="false"
+            aria-controls="navigation-drawer"
+          >☰</button>
+        </div>
+      </header>
+
+      <!-- Dynamic Content will be loaded here -->
+      <main id="main-content" class="main-content" role="main">
+        <!-- Loading indicator for dynamic content -->
+        <div id="loading-indicator" class="loading" style="display: none;">
+          <div class="spinner"></div>
+          <p>Loading content...</p>
+        </div>
+        
+        <!-- Offline notification -->
+        <div id="offline-notification" class="offline-notification" style="display: none;">
+          <p>You are currently offline. Some features may be limited.</p>
+        </div>
+      </main>
+      
+      <footer role="contentinfo">
+        <p>&copy; 2025 Story App. All rights reserved.</p>
+        <!-- Install button (hidden by default, shown when PWA can be installed) -->
+        <button id="install-button" class="install-button" style="display: none;">
+          Install App
+        </button>
+      </footer>
+    </div>
+
+    <!-- External Libraries -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    
+    <!-- App Scripts -->
+    <script src="/scripts/index.js" type="module"></script>
+    
+    <!-- Register Service Worker -->
+    <script>
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+          navigator.serviceWorker.register('/sw.js')
+            .then(registration => {
+              console.log('ServiceWorker registration successful');
+              
+              // Check if the app is launched from homescreen
+              if (window.matchMedia('(display-mode: standalone)').matches) {
+                console.log('Launched as PWA');
+              }
+            })
+            .catch(err => {
+              console.log('ServiceWorker registration failed: ', err);
+            });
+        });
+        
+        // Network status detection
+        window.addEventListener('online', () => {
+          document.getElementById('offline-notification').style.display = 'none';
+        });
+        
+        window.addEventListener('offline', () => {
+          document.getElementById('offline-notification').style.display = 'block';
+        });
+        
+        // Initial network status check
+        if (!navigator.onLine) {
+          document.getElementById('offline-notification').style.display = 'block';
+        }
+      }
+    </script>
+  </body>
+</html>
