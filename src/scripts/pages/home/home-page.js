@@ -10,6 +10,7 @@ export default class HomePage {
     this.currentToken = null;
     this._mapBounds = null;
     this._cachedStories = null;
+    this._pendingDeletions = new Set();
     this._initServiceWorker();
     this._setupNetworkListeners();
   }
@@ -121,6 +122,9 @@ export default class HomePage {
         stories = response?.listStory || [];
         this._cachedStories = stories;
         await this._cacheStories(stories);
+        
+        // Process any pending deletions when coming online
+        await this._processPendingDeletions();
       } else {
         stories = await db.getAllStories();
         if (!stories.length && this._cachedStories) {
@@ -129,12 +133,33 @@ export default class HomePage {
         this._showStatusMessage('You\'re offline. Showing cached stories.', 'info');
       }
       
+      // Filter out any stories marked for deletion
+      stories = stories.filter(story => !this._pendingDeletions.has(story.id));
+      
       this._renderStories(stories || []);
       this._initMap(stories || []);
       
     } catch (error) {
       console.error('Load stories error:', error);
       throw error;
+    }
+  }
+
+  async _processPendingDeletions() {
+    try {
+      const pendingDeletions = await db.getPendingDeletions();
+      for (const storyId of pendingDeletions) {
+        try {
+          await StoryApiService.deleteStory(storyId, AuthService.getToken());
+          await db.deleteStory(storyId);
+          await db.removePendingDeletion(storyId);
+          this._pendingDeletions.delete(storyId);
+        } catch (error) {
+          console.error(`Failed to process pending deletion for story ${storyId}:`, error);
+        }
+      }
+    } catch (error) {
+      console.error('Error processing pending deletions:', error);
     }
   }
 
@@ -221,6 +246,14 @@ export default class HomePage {
     });
 
     // Delete Modal Handlers
+    document.getElementById('confirm-delete')?.addEventListener('click', async () => {
+      const modal = document.getElementById('delete-modal');
+      const storyId = modal.dataset.storyId;
+      if (storyId) {
+        await this._handleDeleteStory(storyId);
+      }
+    });
+
     document.getElementById('cancel-delete')?.addEventListener('click', () => {
       document.getElementById('delete-modal').classList.add('hidden');
     });
@@ -249,30 +282,66 @@ export default class HomePage {
 
   _showDeleteModal(storyId) {
     const modal = document.getElementById('delete-modal');
+    if (!modal) return;
+
     modal.dataset.storyId = storyId;
     modal.classList.remove('hidden');
-
-    document.getElementById('confirm-delete').onclick = async () => {
-      modal.classList.add('hidden');
-      await this._handleDeleteStory(storyId);
-    };
   }
 
   async _handleDeleteStory(storyId) {
     try {
+      if (this._pendingDeletions.has(storyId)) {
+        NotificationUtils.showToast('Deletion already in progress');
+        return;
+      }
+
+      this._pendingDeletions.add(storyId);
+      this._showLoading(true);
+
+      // Update UI immediately
+      const storyElement = document.querySelector(`.story-card[data-id="${storyId}"]`);
+      if (storyElement) {
+        storyElement.classList.add('deleting');
+      }
+
       if (navigator.onLine) {
+        // Online deletion
         await StoryApiService.deleteStory(storyId, AuthService.getToken());
         await db.deleteStory(storyId);
         NotificationUtils.showToast('Story deleted successfully');
       } else {
+        // Offline handling
         await db.markStoryAsPending(storyId, 'delete');
-        NotificationUtils.showToast('Story will be deleted when online');
+        NotificationUtils.showToast('Deletion pending - will complete when online');
       }
-      this._loadStories();
+
+      // Remove from view
+      if (storyElement) {
+        storyElement.remove();
+      }
+
+      // Update map
+      this._initMap(await this._getFilteredStories());
+
     } catch (error) {
       console.error('Delete failed:', error);
-      NotificationUtils.showToast('Failed to delete story');
+      NotificationUtils.showToast('Failed to delete story. Please try again.');
+      
+      // Reset UI if failed
+      const storyElement = document.querySelector(`.story-card[data-id="${storyId}"]`);
+      if (storyElement) {
+        storyElement.classList.remove('deleting');
+      }
+    } finally {
+      this._pendingDeletions.delete(storyId);
+      this._showLoading(false);
+      document.getElementById('delete-modal').classList.add('hidden');
     }
+  }
+
+  async _getFilteredStories() {
+    const allStories = await db.getAllStories();
+    return allStories.filter(story => !this._pendingDeletions.has(story.id));
   }
 
   _showStatusMessage(message, type) {
@@ -302,11 +371,6 @@ export default class HomePage {
     }
   }
 
-  _hideStatusMessage() {
-    const container = document.getElementById('status-message');
-    if (container) container.classList.add('hidden');
-  }
-
   _handleNetworkChange(isOnline) {
     this._updateNetworkStatus();
     if (isOnline) {
@@ -322,33 +386,18 @@ export default class HomePage {
 
   _updateNetworkStatus() {
     const isOnline = navigator.onLine;
-    const statusBar = document.getElementById('offline-status-bar');
     const addStoryBtn = document.querySelector('.add-story-button');
-    
-    if (statusBar) statusBar.classList.toggle('hidden', isOnline);
     if (addStoryBtn) addStoryBtn.classList.toggle('disabled', !isOnline);
   }
 
   _showAuthToast() {
-    const toast = document.createElement('div');
-    toast.className = 'auth-toast';
-    toast.innerHTML = `
-      <div class="toast-content">
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-          <circle cx="12" cy="12" r="10"></circle>
-          <line x1="12" y1="8" x2="12" y2="12"></line>
-          <line x1="12" y1="16" x2="12.01" y2="16"></line>
-        </svg>
-        <span>Please login to add stories</span>
-      </div>
-      <button class="toast-button">Login</button>
-    `;
-    
-    document.body.appendChild(toast);
-    setTimeout(() => toast.remove(), 3000);
-    
-    toast.querySelector('.toast-button')?.addEventListener('click', () => {
-      window.location.hash = '#/login';
+    NotificationUtils.showToast('Please login to add stories', {
+      action: {
+        text: 'Login',
+        handler: () => {
+          window.location.hash = '#/login';
+        }
+      }
     });
   }
 
