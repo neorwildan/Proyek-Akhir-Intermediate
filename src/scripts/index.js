@@ -3,285 +3,186 @@ import App from './pages/app';
 import StoryApiService from './data/api';
 import AuthService from './data/auth';
 
-let appInstance = null;
-let deferredPrompt = null; // Untuk PWA install prompt
+// Safe reference to app elements
+const elements = {
+  content: () => document.querySelector('#main-content'),
+  drawerButton: () => document.querySelector('#drawer-button'),
+  navigationDrawer: () => document.querySelector('#navigation-drawer'),
+  offlineNotification: () => document.getElementById('offline-notification'),
+  installButton: () => document.getElementById('install-button')
+};
 
-// PWA Installation Handler
+// App State
+let appInstance = null;
+let deferredPrompt = null;
+let isOnline = navigator.onLine;
+
+// Safe showToast function
+function showToast(message, options) {
+  if (appInstance?.showToast) {
+    appInstance.showToast(message, options);
+  } else {
+    console.log('Toast:', message);
+    // Fallback notification
+    const toast = document.createElement('div');
+    toast.className = 'fallback-toast';
+    toast.textContent = message;
+    document.body.appendChild(toast);
+    setTimeout(() => toast.remove(), 3000);
+  }
+}
+
+// Safe network status handler
+function handleNetworkStatusChange(online) {
+  if (appInstance?.onNetworkStatusChange) {
+    appInstance.onNetworkStatusChange(online);
+  }
+  // Default behavior
+  const notification = elements.offlineNotification();
+  if (notification) {
+    notification.style.display = online ? 'none' : 'block';
+  }
+}
+
+// ========== PWA Installation ========== //
+
 function setupPWAInstallation() {
-  // Event untuk beforeinstallprompt
   window.addEventListener('beforeinstallprompt', (e) => {
-    console.log('PWA install prompt available');
     e.preventDefault();
     deferredPrompt = e;
-    
-    // Tampilkan install button jika ada
-    const installButton = document.getElementById('install-button');
-    if (installButton) {
-      installButton.style.display = 'block';
-      installButton.addEventListener('click', () => installPWA());
+    const button = elements.installButton();
+    if (button) {
+      button.style.display = 'block';
+      button.onclick = () => deferredPrompt.prompt();
     }
   });
 
-  // Event untuk appinstalled
   window.addEventListener('appinstalled', () => {
-    console.log('PWA was installed');
-    deferredPrompt = null;
-    const installButton = document.getElementById('install-button');
-    if (installButton) installButton.style.display = 'none';
+    const button = elements.installButton();
+    if (button) button.style.display = 'none';
   });
 }
 
-// Fungsi untuk menampilkan install prompt
-function installPWA() {
-  if (!deferredPrompt) return;
+// ========== Network Detection ========== //
 
-  deferredPrompt.prompt();
-  
-  deferredPrompt.userChoice.then((choiceResult) => {
-    if (choiceResult.outcome === 'accepted') {
-      console.log('User accepted the install prompt');
-    } else {
-      console.log('User dismissed the install prompt');
-    }
-    deferredPrompt = null;
-  });
-}
-
-// Network Status Detection
 function setupNetworkDetection() {
-  // 1. Cek atau buat elemen notifikasi
-  let offlineNotification = document.getElementById('offline-notification');
-  
-  if (!offlineNotification) {
-    console.warn('Membuat elemen notifikasi offline secara dinamis');
-    offlineNotification = document.createElement('div');
-    offlineNotification.id = 'offline-notification';
-    offlineNotification.className = 'offline-notification';
-    offlineNotification.innerHTML = '<p>You are currently offline. Some features may be limited.</p>';
-    document.body.appendChild(offlineNotification);
-  }
-
-  // 2. Fungsi update status dengan error handling
-  const updateOnlineStatus = () => {
-    try {
-      const element = document.getElementById('offline-notification');
-      if (element) {
-        element.style.display = navigator.onLine ? 'none' : 'block';
-        console.log(`Status: ${navigator.onLine ? 'Online' : 'Offline'}`);
-      }
-    } catch (error) {
-      console.error('Error updating network status:', error);
+  const updateStatus = () => {
+    isOnline = navigator.onLine;
+    const notification = elements.offlineNotification();
+    if (notification) {
+      notification.style.display = isOnline ? 'none' : 'block';
     }
+    handleNetworkStatusChange(isOnline);
   };
 
-  // 3. Pasang event listeners dengan fallback
-  if (window.addEventListener) {
-    window.addEventListener('online', updateOnlineStatus);
-    window.addEventListener('offline', updateOnlineStatus);
-  } else {
-    // Fallback untuk browser lama
-    setInterval(updateOnlineStatus, 5000);
-  }
-
-  // 4. Initial check
-  updateOnlineStatus();
+  window.addEventListener('online', updateStatus);
+  window.addEventListener('offline', updateStatus);
+  updateStatus();
 }
 
-// Panggil setelah DOM siap
-document.addEventListener('DOMContentLoaded', setupNetworkDetection);
+// ========== Authentication ========== //
 
-// Update Navigation Based on Auth Status
 function updateNavigation() {
   const navList = document.getElementById('nav-list');
-  const isAuthenticated = AuthService.isAuthenticated();
-  
-  if (navList) {
-    const authItem = Array.from(navList.children).find(item => {
-      const link = item.querySelector('a');
-      return link && (link.getAttribute('href') === '#/login' || link.getAttribute('href') === '#/logout');
-    });
-    
-    if (authItem) {
-      const authLink = authItem.querySelector('a');
-      
-      if (isAuthenticated) {
-        authLink.textContent = 'Logout';
-        authLink.setAttribute('href', '#/logout');
-        authLink.setAttribute('id', 'logout-button');
-      } else {
-        authLink.textContent = 'Login';
-        authLink.setAttribute('href', '#/login');
-        authLink.removeAttribute('id');
-      }
-    }
-  }
-}
+  if (!navList) return;
 
-// Logout Button Handler
-function setupLogoutButton() {
-  document.addEventListener('click', (event) => {
-    if (event.target.id === 'logout-button' || event.target.closest('#logout-button')) {
-      event.preventDefault();
-      AuthService.logout();
-      window.location.hash = '#/';
-      updateNavigation();
-      
-      // Refresh app after logout
-      if (appInstance) {
-        appInstance.renderPage();
-      }
+  const isAuthenticated = AuthService.isAuthenticated();
+  const authLinks = navList.querySelectorAll('a[href^="#/login"], a[href^="#/logout"]');
+
+  authLinks.forEach(link => {
+    if (isAuthenticated) {
+      link.textContent = 'Logout';
+      link.href = '#/logout';
+      link.id = 'logout-button';
+    } else {
+      link.textContent = 'Login';
+      link.href = '#/login';
+      link.removeAttribute('id');
     }
   });
 }
 
-// Service Worker Registration
+function setupLogoutButton() {
+  document.addEventListener('click', (e) => {
+    if (e.target.closest('#logout-button')) {
+      e.preventDefault();
+      AuthService.logout();
+      updateNavigation();
+      window.location.hash = '#/';
+      if (appInstance?.renderPage) appInstance.renderPage();
+    }
+  });
+}
+
+// ========== Service Worker ========== //
+
 async function registerServiceWorker() {
   if ('serviceWorker' in navigator) {
     try {
       const registration = await navigator.serviceWorker.register('/sw.js');
-      console.log('ServiceWorker registration successful with scope:', registration.scope);
-      
-      // Check for updates
       registration.addEventListener('updatefound', () => {
         const newWorker = registration.installing;
         newWorker.addEventListener('statechange', () => {
-          if (newWorker.state === 'activated') {
-            console.log('New service worker activated');
-            // Optional: Show update notification to user
-            if (appInstance) {
-              appInstance.showToast('A new version is available. Please refresh the page.');
-            }
+          if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+            showToast('New version available. Refresh to update.');
           }
         });
       });
     } catch (error) {
-      console.error('ServiceWorker registration failed:', error);
+      console.error('SW registration failed:', error);
     }
   }
 }
 
-// Initialize the Application
+// ========== App Initialization ========== //
+
 async function initApp() {
-  console.log('Starting app initialization...');
-
-  // Register Service Worker
-  await registerServiceWorker();
-
-  // Setup PWA features
-  setupPWAInstallation();
-  setupNetworkDetection();
-
-  const elements = {
-    content: document.querySelector('#main-content'),
-    drawerButton: document.querySelector('#drawer-button'),
-    navigationDrawer: document.querySelector('#navigation-drawer')
-  };
-
-  console.log('DOM Elements:', elements);
-
-  // Check API connection with timeout
   try {
-    console.log('Testing API connection...');
-    const apiStatus = await Promise.race([
-      StoryApiService.testConnection(),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 5000))
-    ]);
-    console.log('API Status:', apiStatus);
+    // Register Service Worker
+    await registerServiceWorker();
+
+    // Setup features
+    setupPWAInstallation();
+    setupNetworkDetection();
+    updateNavigation();
+    setupLogoutButton();
+
+    // Initialize app
+    appInstance = new App({
+      content: elements.content(),
+      drawerButton: elements.drawerButton(),
+      navigationDrawer: elements.navigationDrawer()
+    });
+
+    // Verify connection
+    try {
+      await StoryApiService.testConnection();
+    } catch (error) {
+      showToast('Connection issues detected. Running in limited mode.');
+    }
+
+    // Setup footer
+    const footer = document.querySelector('footer');
+    if (footer) {
+      footer.innerHTML = `
+        <p>&copy; ${new Date().getFullYear()} Story App</p>
+        <button id="install-button" style="display:none">Install App</button>
+      `;
+    }
+
   } catch (error) {
-    console.warn('API Check Warning:', error.message);
-    if (appInstance) {
-      appInstance.showToast(error.message.includes('Timeout') ? 
-        'Slow connection detected. Running in limited mode.' : 
-        'Connection issues detected. Some features may be limited.');
-    }
+    console.error('App initialization failed:', error);
+    showToast('App failed to initialize. Please refresh.');
   }
-
-  // Setup footer
-  const footer = document.querySelector('footer');
-  if (footer) {
-    footer.classList.add('app-footer');
-    footer.innerHTML = `
-      <div class="container footer-content">
-        <div class="footer-copyright">
-          <p>&copy; ${new Date().getFullYear()} Story App. All rights reserved.</p>
-        </div>
-        <button id="install-button" class="install-button" style="display: none;">
-          Install App
-        </button>
-      </div>
-    `;
-  }
-
-  // Initial auth state
-  const wasLoggedIn = AuthService.isAuthenticated();
-  console.log('Initial auth state:', wasLoggedIn ? 'Logged in' : 'Not logged in');
-
-  // Setup navigation and logout
-  updateNavigation();
-  setupLogoutButton();
-
-  // Initialize main app
-  appInstance = new App({
-    content: elements.content,
-    drawerButton: elements.drawerButton,
-    navigationDrawer: elements.navigationDrawer
-  });
-
-  // Listen for auth changes
-  window.addEventListener('storage', (event) => {
-    if (event.key === 'user') {
-      const isLoggedIn = AuthService.isAuthenticated();
-      const wasChange = isLoggedIn !== wasLoggedIn;
-      
-      console.log('Auth state changed:', isLoggedIn ? 'Logged in' : 'Not logged in', 
-                  'Changed:', wasChange);
-
-      updateNavigation();
-      
-      if (wasChange && appInstance) {
-        console.log('Forcing page re-render after auth change');
-        appInstance.renderPage();
-      }
-    }
-  });
-
-  // Listen for messages from service worker
-  navigator.serviceWorker?.addEventListener('message', (event) => {
-    console.log('Message from Service Worker:', event.data);
-    if (event.data.type === 'push-notification' && appInstance) {
-      appInstance.showToast(event.data.payload.body || 'New notification received');
-    }
-  });
-
-  console.log('App initialized successfully');
 }
 
-// Start the app when DOM is ready
-if (document.readyState === 'complete' || document.readyState === 'interactive') {
+// Start the app
+if (document.readyState !== 'loading') {
   initApp();
 } else {
   document.addEventListener('DOMContentLoaded', initApp);
 }
 
-// Global refresh function
-window.refreshApp = function() {
-  if (appInstance) {
-    console.log('Manual app refresh requested');
-    appInstance.renderPage();
-    updateNavigation();
-    return true;
-  }
-  return false;
-};
-
-// Global install function
-window.installPWA = installPWA;
-
-// Export for testing
-if (process.env.NODE_ENV === 'test') {
-  module.exports = {
-    updateNavigation,
-    setupLogoutButton,
-    initApp
-  };
-}
+// Global functions
+window.refreshApp = () => appInstance?.renderPage?.();
+window.installPWA = () => deferredPrompt?.prompt?.();

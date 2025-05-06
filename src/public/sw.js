@@ -1,342 +1,294 @@
-const APP_VERSION = '1.0.0';
-const CACHE_NAME = `story-app-cache-${APP_VERSION}`;
-const RUNTIME_CACHE = 'runtime-cache';
+const APP_VERSION = '1.0.3';
+const CACHE_NAME = `story-app-cache-v${APP_VERSION}`;
+const RUNTIME_CACHE = 'runtime-cache-v3';
+const OFFLINE_CACHE = 'offline-cache-v3';
+const HOME_CACHE = 'home-cache-v2';
+const API_CACHE = 'api-cache-v1';
 
-// Daftar asset yang akan di-cache saat install
+// Precached assets - App Shell + Critical Resources
 const PRECACHE_ASSETS = [
   '/',
   '/index.html',
+  '/offline.html',
   '/styles/styles.css',
   '/scripts/index.js',
+  '/scripts/app.js',
+  '/scripts/routes/routes.js',
+  '/scripts/pages/home-page.js',
   '/public/images/icon-192x192.png',
   '/public/images/icon-512x512.png',
-  '/public/images/default-avatar.png',
   '/public/images/logo.png',
+  '/public/images/default-avatar.png',
   '/favicon.png',
-  '/fallback.html',
-  '/offline.css'
+  '/manifest.json'
 ];
 
-// Daftar strategi caching untuk berbagai tipe request
-const CACHE_STRATEGIES = {
-  static: 'CacheFirst',
-  images: 'CacheFirst',
-  api: 'NetworkFirst',
-  pages: 'NetworkFirst',
-  external: 'StaleWhileRevalidate'
-};
+// Home-specific assets
+const HOME_ASSETS = [
+  '/',
+  '/index.html',
+  '/styles/styles.css',
+  '/scripts/home-page.js',
+  '/public/images/logo.png'
+];
 
-// Install Service Worker dan precache asset penting
+// External resources
+const EXTERNAL_RESOURCES = [
+  'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css',
+  'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js'
+];
+
+// ================= INSTALL =================
 self.addEventListener('install', (event) => {
+  console.log('[SW] Installing version', APP_VERSION);
   event.waitUntil(
-    caches.open(CACHE_NAME)
-      .then((cache) => {
-        console.log('Service Worker: Caching core assets');
+    caches.open(HOME_CACHE)
+      .then(cache => {
+        console.log('[SW] Caching home assets');
+        return cache.addAll(HOME_ASSETS);
+      })
+      .then(() => caches.open(CACHE_NAME))
+      .then(cache => {
+        console.log('[SW] Caching core assets');
         return cache.addAll(PRECACHE_ASSETS);
       })
       .then(() => {
-        console.log('Service Worker: Skip waiting');
-        return self.skipWaiting();
+        console.log('[SW] Caching external resources');
+        return caches.open(RUNTIME_CACHE)
+          .then(cache => cache.addAll(EXTERNAL_RESOURCES));
       })
-      .catch((err) => {
-        console.error('Service Worker: Installation failed', err);
-      })
+      .then(() => self.skipWaiting())
   );
 });
 
-// Aktifkan Service Worker dan bersihkan cache lama
+// ================= ACTIVATE =================
 self.addEventListener('activate', (event) => {
-  const cacheWhitelist = [CACHE_NAME, RUNTIME_CACHE];
+  console.log('[SW] Activating new version');
+  const cacheWhitelist = [CACHE_NAME, RUNTIME_CACHE, OFFLINE_CACHE, HOME_CACHE, API_CACHE];
   
   event.waitUntil(
-    caches.keys().then((cacheNames) => {
+    caches.keys().then(cacheNames => {
       return Promise.all(
-        cacheNames.map((cacheName) => {
-          if (!cacheWhitelist.includes(cacheName)) {
-            console.log('Service Worker: Deleting old cache', cacheName);
-            return caches.delete(cacheName);
-          }
-        })
+        cacheNames
+          .filter(name => !cacheWhitelist.includes(name))
+          .map(name => {
+            console.log('[SW] Deleting old cache', name);
+            return caches.delete(name);
+          })
       );
-    })
-    .then(() => {
-      console.log('Service Worker: Claiming clients');
+    }).then(() => {
+      console.log('[SW] Claiming clients');
       return self.clients.claim();
     })
   );
 });
 
-// Strategi caching: Cache First dengan fallback ke network
-const cacheFirst = async (request) => {
-  const cachedResponse = await caches.match(request);
-  if (cachedResponse) return cachedResponse;
-  
-  try {
-    const networkResponse = await fetch(request);
-    if (networkResponse.ok) {
-      const cache = await caches.open(RUNTIME_CACHE);
-      cache.put(request, networkResponse.clone());
-    }
-    return networkResponse;
-  } catch (error) {
-    return caches.match('/fallback.html');
-  }
-};
-
-// Strategi caching: Network First dengan fallback ke cache
-const networkFirst = async (request) => {
-  try {
-    const networkResponse = await fetch(request);
-    if (networkResponse.ok) {
-      const cache = await caches.open(RUNTIME_CACHE);
-      cache.put(request, networkResponse.clone());
-      return networkResponse;
-    }
-    throw new Error('Network response not OK');
-  } catch (error) {
-    const cachedResponse = await caches.match(request);
-    return cachedResponse || caches.match('/fallback.html');
-  }
-};
-
-// Strategi caching: Stale While Revalidate
-const staleWhileRevalidate = async (request) => {
-  const cache = await caches.open(RUNTIME_CACHE);
-  const cachedResponse = await cache.match(request);
-  
-  // Lakukan fetch di background untuk update cache
-  const fetchPromise = fetch(request).then((networkResponse) => {
-    if (networkResponse.ok) {
-      cache.put(request, networkResponse.clone());
-    }
-    return networkResponse;
-  }).catch(() => null); // Abaikan error fetch
-
-  // Return cached response jika ada, jika tidak tunggu network response
-  return cachedResponse || fetchPromise;
-};
-
-// Tentukan strategi caching berdasarkan request
-const getCacheStrategy = (request) => {
-  const url = new URL(request.url);
-  
-  // API endpoints
-  if (url.pathname.startsWith('/api/')) {
-    return CACHE_STRATEGIES.api;
-  }
-  
-  // Halaman HTML
-  if (request.headers.get('Accept').includes('text/html')) {
-    return CACHE_STRATEGIES.pages;
-  }
-  
-  // Asset statis (CSS, JS)
-  if (request.destination === 'style' || request.destination === 'script') {
-    return CACHE_STRATEGIES.static;
-  }
-  
-  // Gambar
-  if (request.destination === 'image') {
-    return CACHE_STRATEGIES.images;
-  }
-  
-  // Resource eksternal
-  if (url.origin !== self.location.origin) {
-    return CACHE_STRATEGIES.external;
-  }
-  
-  // Default
-  return CACHE_STRATEGIES.static;
-};
-
-// Handle fetch events dengan strategi yang sesuai
+// ================= FETCH HANDLER =================
 self.addEventListener('fetch', (event) => {
-  // 1. Skip request non-GET dan chrome-extension
-  if (event.request.method !== 'GET' || event.request.url.startsWith('chrome-extension://')) {
+  const { request } = event;
+  const url = new URL(request.url);
+
+  // Skip non-GET requests
+  if (request.method !== 'GET') return;
+
+  // Home page cache-first strategy
+  if (url.pathname === '/' || url.pathname === '/index.html') {
+    event.respondWith(
+      caches.match(request, { cacheName: HOME_CACHE })
+        .then(cached => cached || fetch(request))
+        .catch(() => caches.match('/offline.html'))
+    );
     return;
   }
 
-  // 2. Tentukan strategi caching
-  const strategy = getCacheStrategy(event.request);
-  
-  // 3. Handle berdasarkan strategi dengan network status reporting
-  switch (strategy) {
-    case 'NetworkFirst':
-      event.respondWith(
-        networkFirstWithStatus(event.request)
-      );
-      break;
-      
-    case 'StaleWhileRevalidate':
-      event.respondWith(
-        staleWhileRevalidateWithStatus(event.request)
-      );
-      break;
-      
-    case 'CacheFirst':
-    default:
-      event.respondWith(
-        cacheFirstWithStatus(event.request)
-      );
-      break;
+  // API endpoints - with IndexedDB fallback
+  if (url.pathname === '/api/stories') {
+    event.respondWith(
+      fetch(request)
+        .then(response => {
+          // Cache API response
+          const clone = response.clone();
+          caches.open(API_CACHE)
+            .then(cache => cache.put(request, clone));
+          return response;
+        })
+        .catch(async () => {
+          // Fallback 1: Check runtime cache
+          const cached = await caches.match(request);
+          if (cached) return cached;
+          
+          // Fallback 2: Request from client via IndexedDB
+          const clients = await self.clients.matchAll();
+          clients.forEach(client => {
+            client.postMessage({
+              type: 'get-offline-stories'
+            });
+          });
+          
+          // Return empty array as temporary response
+          return new Response(JSON.stringify([]), {
+            headers: { 'Content-Type': 'application/json' }
+          });
+        })
+    );
+    return;
+  }
+
+  // Other API endpoints (network first)
+  if (url.pathname.startsWith('/api/')) {
+    event.respondWith(
+      fetch(request)
+        .then(response => {
+          const clone = response.clone();
+          caches.open(API_CACHE)
+            .then(cache => cache.put(request, clone));
+          return response;
+        })
+        .catch(() => caches.match(request))
+    );
+    return;
+  }
+
+  // Static assets (cache first)
+  if (['style', 'script', 'font', 'image'].includes(request.destination)) {
+    event.respondWith(
+      caches.match(request)
+        .then(cached => {
+          if (cached) return cached;
+          
+          // Special handling for images
+          if (request.destination === 'image') {
+            return fetch(request).catch(() => {
+              return caches.match('/public/images/default-avatar.png');
+            });
+          }
+          
+          return fetch(request);
+        })
+    );
+    return;
+  }
+
+  // Default network first for other pages
+  event.respondWith(
+    fetch(request)
+      .catch(() => caches.match('/offline.html'))
+  );
+});
+
+// ================= MESSAGE HANDLER =================
+self.addEventListener('message', (event) => {
+  // Handle IndexedDB response for offline stories
+  if (event.data.type === 'offline-stories-response') {
+    console.log('[SW] Received offline stories from client');
+    const response = new Response(JSON.stringify(event.data.stories), {
+      headers: { 'Content-Type': 'application/json' }
+    });
+    
+    event.waitUntil(
+      caches.open(API_CACHE)
+        .then(cache => cache.put('/api/stories', response))
+    );
+  }
+
+  // Handle story caching from client
+  if (event.data.type === 'cache-story') {
+    const { storyId, storyData } = event.data;
+    const url = `/api/stories/${storyId}`;
+    const response = new Response(JSON.stringify(storyData), {
+      headers: { 'Content-Type': 'application/json' }
+    });
+    
+    console.log(`[SW] Caching story ${storyId}`);
+    event.waitUntil(
+      caches.open(RUNTIME_CACHE)
+        .then(cache => cache.put(url, response))
+    );
   }
 });
 
-// Enhanced strategies dengan network status reporting
-async function networkFirstWithStatus(request) {
-  try {
-    const response = await fetch(request);
-    reportNetworkStatus(true);
-    return response;
-  } catch (error) {
-    reportNetworkStatus(false);
-    const cachedResponse = await caches.match(request);
-    return cachedResponse || caches.match('/offline.html');
-  }
-}
-
-async function staleWhileRevalidateWithStatus(request) {
-  const cache = await caches.open('runtime-cache');
-  const cachedResponse = await cache.match(request);
-  
-  // Background fetch untuk update
-  const fetchPromise = fetch(request)
-    .then(networkResponse => {
-      reportNetworkStatus(true);
-      cache.put(request, networkResponse.clone());
-      return networkResponse;
-    })
-    .catch(() => reportNetworkStatus(false));
-
-  return cachedResponse || fetchPromise;
-}
-
-async function cacheFirstWithStatus(request) {
-  const cachedResponse = await caches.match(request);
-  if (cachedResponse) return cachedResponse;
-  
-  try {
-    const networkResponse = await fetch(request);
-    reportNetworkStatus(true);
-    const cache = await caches.open('runtime-cache');
-    cache.put(request, networkResponse.clone());
-    return networkResponse;
-  } catch (error) {
-    reportNetworkStatus(false);
-    return caches.match('/offline.html');
-  }
-}
-
-// Fungsi untuk mengirim status jaringan ke client
-function reportNetworkStatus(isOnline) {
-  self.clients.matchAll().then(clients => {
-    clients.forEach(client => {
-      client.postMessage({ 
-        type: 'network-status', 
-        isOnline,
-        timestamp: Date.now() 
-      });
-    });
-  });
-}
-
-// Background Sync (jika didukung)
+// ================= BACKGROUND SYNC =================
 self.addEventListener('sync', (event) => {
   if (event.tag === 'sync-stories') {
-    console.log('Background sync for stories');
-    // Implementasi sync data di sini
+    console.log('[SW] Background sync triggered');
+    event.waitUntil(
+      syncStories().then(() => {
+        return self.clients.matchAll().then(clients => {
+          clients.forEach(client => {
+            client.postMessage({ type: 'sync-completed' });
+          });
+        });
+      })
+    );
   }
 });
 
-// Periodic Sync (jika didukung)
-self.addEventListener('periodicsync', (event) => {
-  if (event.tag === 'update-stories') {
-    console.log('Periodic sync for stories');
-    // Implementasi periodic sync di sini
+async function syncStories() {
+  // Implement your story synchronization logic here
+  try {
+    const cache = await caches.open(RUNTIME_CACHE);
+    const requests = await cache.keys();
+    const storyRequests = requests.filter(req => 
+      req.url.includes('/api/stories/')
+    );
+    
+    // Process each cached story
+    for (const request of storyRequests) {
+      const response = await cache.match(request);
+      if (response) {
+        const story = await response.json();
+        // Try to sync with server
+        // await syncStoryWithServer(story);
+      }
+    }
+    
+    console.log('[SW] Background sync completed');
+  } catch (error) {
+    console.error('[SW] Background sync failed:', error);
   }
-});
+}
 
-// Push Notification Handler
+// ================= PUSH NOTIFICATIONS =================
 self.addEventListener('push', (event) => {
-  console.log('Push notification received');
-  
   const payload = event.data?.json() || {
-    title: 'Story Update',
-    body: 'Ada pembaruan cerita baru',
+    title: 'New Story Available',
+    body: 'Check out the latest story!',
     icon: '/public/images/icon-192x192.png',
     badge: '/public/images/badge.png',
     data: { url: '/' }
   };
 
-  const showNotification = (title, options) => {
-    const defaultOptions = {
-      icon: '/public/images/icon-192x192.png',
-      badge: '/public/images/badge.png',
-      vibrate: [200, 100, 200],
-      data: { url: '/', storyId: null },
-      ...options
-    };
-
-    return self.registration.showNotification(title, defaultOptions);
-  };
-
   event.waitUntil(
-    (async () => {
-      // Cek apakah ada clients yang terbuka
-      const allClients = await self.clients.matchAll();
-      
-      // Jika ada client yang terbuka, mungkin tidak perlu notifikasi
-      if (allClients.length > 0) {
-        // Kirim message ke client
-        allClients.forEach(client => {
-          client.postMessage({
-            type: 'push-notification',
-            payload: payload
-          });
-        });
-        
-        // Tampilkan notifikasi hanya jika payload memaksa
-        if (payload.forceShow) {
-          return showNotification(payload.title, payload);
-        }
-      } else {
-        // Tampilkan notifikasi jika tidak ada client terbuka
-        return showNotification(payload.title, payload);
-      }
-    })()
+    self.registration.showNotification(payload.title, {
+      body: payload.body,
+      icon: payload.icon,
+      badge: payload.badge,
+      data: payload.data,
+      vibrate: [200, 100, 200]
+    })
   );
 });
 
-// Handle notification click
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
-  
-  const notificationData = event.notification.data || { url: '/' };
-  const urlToOpen = new URL(notificationData.url, self.location.origin).href;
+  const urlToOpen = new URL(event.notification.data?.url || '/', self.location.origin).href;
 
   event.waitUntil(
-    (async () => {
-      const windowClients = await self.clients.matchAll({
-        type: 'window',
-        includeUncontrolled: true
-      });
-
-      // Cari tab yang sudah terbuka dengan URL yang sama
-      for (const client of windowClients) {
+    clients.matchAll({
+      type: 'window',
+      includeUncontrolled: true
+    }).then(clients => {
+      // Focus existing client if available
+      for (const client of clients) {
         if (client.url === urlToOpen && 'focus' in client) {
           return client.focus();
         }
       }
-
-      // Buka tab baru jika tidak ditemukan
-      if (self.clients.openWindow) {
-        return self.clients.openWindow(urlToOpen);
+      
+      // Open new window if none exists
+      if (clients.openWindow) {
+        return clients.openWindow(urlToOpen);
       }
-    })()
+    })
   );
-});
-
-// Handle notification close
-self.addEventListener('notificationclose', (event) => {
-  console.log('Notification closed:', event.notification);
 });

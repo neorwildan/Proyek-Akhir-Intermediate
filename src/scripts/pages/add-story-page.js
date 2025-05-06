@@ -3,6 +3,7 @@ import AuthService from '../data/auth';
 import { initCamera, stopCamera } from '../utils/camera-utils';
 import { initMap } from '../utils/map-utils';
 import NotificationUtils from '../utils/notification-utils';
+import { db } from '../utils/database';
 
 export default class AddStoryPage {
   constructor() {
@@ -11,7 +12,10 @@ export default class AddStoryPage {
     this.cameraStream = null;
     this.isCameraActive = false;
     this.map = null;
+    this.currentMarker = null;
     this._initServiceWorker();
+    this._setupOfflineDetection();
+    this._requestNotificationPermission();
   }
 
   render() {
@@ -142,6 +146,14 @@ export default class AddStoryPage {
             Publikasikan
           </button>
         </form>
+
+        <!-- Notification Popup -->
+        <div id="notificationPopup" class="notification-popup" style="display: none;">
+          <div class="notification-content">
+            <p id="notificationMessage"></p>
+            <button id="closeNotification">Tutup</button>
+          </div>
+        </div>
       </section>
     `;
   }
@@ -149,46 +161,103 @@ export default class AddStoryPage {
   async afterRender() {
     this._initMap();
     this._setupEventListeners();
+    this._setupNotificationPopup();
+  }
+
+  async _requestNotificationPermission() {
+    if ('Notification' in window) {
+      try {
+        const permission = await Notification.requestPermission();
+        console.log('Notification permission:', permission);
+      } catch (error) {
+        console.error('Error requesting notification permission:', error);
+      }
+    }
+  }
+
+  _setupNotificationPopup() {
+    const popup = document.getElementById('notificationPopup');
+    const closeBtn = document.getElementById('closeNotification');
+    
+    closeBtn.addEventListener('click', () => {
+      popup.style.display = 'none';
+    });
+    
+    // Close when clicking outside
+    window.addEventListener('click', (event) => {
+      if (event.target === popup) {
+        popup.style.display = 'none';
+      }
+    });
+  }
+
+  _showPopupNotification(message) {
+    const popup = document.getElementById('notificationPopup');
+    const messageElement = document.getElementById('notificationMessage');
+    
+    messageElement.textContent = message;
+    popup.style.display = 'flex';
+    
+    // Auto-hide after 3 seconds
+    setTimeout(() => {
+      popup.style.display = 'none';
+    }, 3000);
   }
 
   async _initServiceWorker() {
     if ('serviceWorker' in navigator) {
       try {
-        await navigator.serviceWorker.register('/sw.js');
-        console.log('Service Worker registered for push notifications');
+        const registration = await navigator.serviceWorker.register('/sw.js');
+        console.log('Service Worker registered with scope:', registration.scope);
+        
+        registration.addEventListener('updatefound', () => {
+          const newWorker = registration.installing;
+          newWorker.addEventListener('statechange', () => {
+            if (newWorker.state === 'activated') {
+              console.log('New Service Worker activated');
+            }
+          });
+        });
       } catch (error) {
         console.error('Service Worker registration failed:', error);
       }
     }
   }
 
+  _setupOfflineDetection() {
+    const updateOnlineStatus = () => {
+      const status = navigator.onLine ? 'online' : 'offline';
+      console.log(`Network status changed to: ${status}`);
+    };
+
+    window.addEventListener('online', updateOnlineStatus);
+    window.addEventListener('offline', updateOnlineStatus);
+    updateOnlineStatus();
+  }
+
   _initMap() {
     this.map = initMap('map');
-    this.currentMarker = null; // Tambahkan variabel untuk menyimpan marker saat ini
+    this.currentMarker = null;
     
     this.map.on('click', (e) => {
-        this.location = { lat: e.latlng.lat, lon: e.latlng.lng };
-        
-        // Hapus marker sebelumnya jika ada
-        if (this.currentMarker) {
-            this.map.removeLayer(this.currentMarker);
-        }
-        
-        // Buat marker baru
-        this.currentMarker = L.marker([this.location.lat, this.location.lon])
-            .addTo(this.map)
-            .bindPopup(`Lokasi dipilih: ${this.location.lat}, ${this.location.lon}`)
-            .openPopup();
+      this.location = { lat: e.latlng.lat, lon: e.latlng.lng };
+      
+      if (this.currentMarker) {
+        this.map.removeLayer(this.currentMarker);
+      }
+      
+      this.currentMarker = L.marker([this.location.lat, this.location.lon])
+        .addTo(this.map)
+        .bindPopup(`Lokasi dipilih: ${this.location.lat}, ${this.location.lon}`)
+        .openPopup();
     });
   }
 
   _setupEventListeners() {
-    // Photo source toggle
     document.querySelectorAll('input[name="photoSource"]').forEach(radio => {
       radio.addEventListener('change', (e) => this._handleSourceChange(e));
     });
 
-    // File upload handler
     document.getElementById('fileInput').addEventListener('change', (e) => {
       const file = e.target.files[0];
       if (file && file.type.startsWith('image/')) {
@@ -196,18 +265,15 @@ export default class AddStoryPage {
       }
     });
 
-    // Camera capture handler
     document.getElementById('captureBtn').addEventListener('click', async () => {
       await this._handleCapture();
     });
 
-    // Form submission
     document.getElementById('storyForm').addEventListener('submit', async (e) => {
       e.preventDefault();
       await this._handleSubmit();
     });
 
-    // Camera close
     document.getElementById('closeCameraBtn').addEventListener('click', () => {
       this._closeCamera();
     });
@@ -322,7 +388,6 @@ export default class AddStoryPage {
     submitBtn.setAttribute('aria-busy', 'true');
     submitBtn.textContent = 'Mengupload...';
     
-    // Validate inputs
     const description = document.getElementById('description').value;
     if (!this.photoFile) {
       this._showToast('Harap tambahkan foto terlebih dahulu!');
@@ -338,37 +403,60 @@ export default class AddStoryPage {
       return;
     }
 
+    if (!this.location.lat || !this.location.lon) {
+      this._showToast('Harap pilih lokasi di peta');
+      submitBtn.removeAttribute('aria-busy');
+      submitBtn.textContent = 'Publikasikan';
+      return;
+    }
+
     try {
       const token = AuthService.getToken();
       if (!token) {
         throw new Error('Anda perlu login untuk menambahkan story');
       }
 
-      // Submit story data
-      const response = await StoryApiService.addStory(token, {
+      const storyData = {
         description,
         photo: this.photoFile,
         lat: this.location.lat,
-        lon: this.location.lon
-      });
+        lon: this.location.lon,
+        createdAt: new Date().toISOString(),
+        isPending: true
+      };
 
-      // Show success notification
-      await this._showStoryCreatedNotification(description);
-
-      // UI feedback
-      submitBtn.textContent = 'Berhasil!';
-      this._showToast('Story berhasil dipublikasikan');
-
-      // Redirect after delay
-      setTimeout(() => {
-        window.location.hash = '#/';
-      }, 1500);
-
-      return response;
+      if (navigator.onLine) {
+        await StoryApiService.addStory(token, storyData);
+        this._showSuccess('Story berhasil dipublikasikan!');
+      } else {
+        await db.saveStory(storyData);
+        
+        if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
+          navigator.serviceWorker.controller.postMessage({
+            type: 'cache-story',
+            storyId: Date.now(),
+            storyData
+          });
+        }
+        
+        this._showSuccess('Story disimpan offline. Akan diupload saat online', true);
+      }
     } catch (error) {
       console.error('Story submission failed:', error);
-      this._showToast(`Gagal: ${error.message}`);
-      throw error;
+      try {
+        await db.saveStory({
+          description,
+          photo: this.photoFile,
+          lat: this.location.lat,
+          lon: this.location.lon,
+          createdAt: new Date().toISOString(),
+          isPending: true
+        });
+        this._showToast('Gagal upload. Story disimpan untuk dicoba lagi nanti');
+      } catch (dbError) {
+        console.error('Failed to save to IndexedDB:', dbError);
+        this._showToast('Gagal menyimpan story. Silakan coba lagi');
+      }
     } finally {
       submitBtn.removeAttribute('aria-busy');
       submitBtn.textContent = 'Publikasikan';
@@ -376,30 +464,47 @@ export default class AddStoryPage {
     }
   }
 
-  async _showStoryCreatedNotification(description) {
+  _showSuccess(message, isOffline = false) {
+    const submitBtn = document.querySelector('.submit-btn');
+    submitBtn.textContent = isOffline ? 'Tersimpan Offline!' : 'Berhasil!';
+    
+    // Show popup notification
+    this._showPopupNotification(message);
+    
+    // Reset form
+    document.getElementById('description').value = '';
+    document.getElementById('photoPreview').style.display = 'none';
+    document.getElementById('photoPreview').src = '';
+    this.photoFile = null;
+    
+    if (this.currentMarker) {
+      this.map.removeLayer(this.currentMarker);
+      this.currentMarker = null;
+    }
+    
+    // Redirect after delay
+    setTimeout(() => {
+      window.location.hash = '#/';
+    }, 1500);
+  }
+
+  async _showNotification(message, isOffline = false) {
+    const title = isOffline ? 'Story Disimpan Offline' : 'Story Berhasil Dipublikasikan';
+    
     try {
-      // Coba notifikasi browser pertama
-      const browserNotificationShown = await NotificationUtils.showNotification(
-        "Story Berhasil Dibuat",
-        {
-          body: description,
-          icon: '/images/icon-192x192.png',
-          badge: '/images/badge.png'
-        }
-      );
+      if ('Notification' in window && Notification.permission === 'granted') {
+        const notif = new Notification(title, {
+          body: message,
+          icon: '/images/icon-192x192.png'
+        });
+        return;
+      }
       
-      if (browserNotificationShown) return;
-  
-      // Fallback ke notifikasi custom
-      NotificationUtils.showFallbackNotification(
-        "Story Berhasil Dibuat",
-        description
-      );
-      
+      // Fallback to popup
+      this._showPopupNotification(`${title}: ${message}`);
     } catch (error) {
-      console.error('Gagal menampilkan notifikasi:', error);
-      // Ultimate fallback - alert biasa
-      alert(`Story Berhasil Dibuat!\n\n${description}`);
+      console.error('Failed to show notification:', error);
+      this._showPopupNotification(`${title}: ${message}`);
     }
   }
 }

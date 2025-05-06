@@ -1,31 +1,36 @@
 <!DOCTYPE html>
 <html lang="en">
   <head>
-    <meta http-equiv="Content-Type" content="text/html;charset=UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="description" content="Aplikasi berbagi cerita dengan lokasi">
     
     <!-- PWA Meta Tags -->
-    <meta name="theme-color" content="#ffffff"/>
+    <meta name="theme-color" content="#4a6fa5"/>
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-status-bar-style" content="black">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="Story App">
+    <meta name="application-name" content="Story App">
     
     <!-- Manifest -->
-    <link rel="manifest" href="/manifest.json">
-    <link rel="shortcut icon" href="/favicon.png" type="image/x-icon">
-    <link rel="apple-touch-icon" href="/public/images/logo.png">
+    <link rel="manifest" href="/manifest.webmanifest">
+    <link rel="icon" href="/favicon.png" type="image/png">
+    <link rel="shortcut icon" href="/favicon.png" type="image/png">
+    <link rel="apple-touch-icon" href="/public/images/logo-192x192.png">
 
     <title>Story App - Berbagi Cerita</title>
     
     <!-- Styles -->
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+      crossorigin=""/>
     <link rel="stylesheet" href="/styles/styles.css">
     
     <!-- Preload critical resources -->
     <link rel="preload" href="/scripts/index.js" as="script">
-    <link rel="preload" href="/public/images/logo.png" as="image">
+    <link rel="preload" href="/public/images/logo.png" as="image" type="image/png">
+    <link rel="preload" href="/styles/styles.css" as="style">
   </head>
   <body>
     <!-- Application Shell -->
@@ -68,6 +73,15 @@
         <div id="offline-notification" class="offline-notification" style="display: none;">
           <p>You are currently offline. Some features may be limited.</p>
         </div>
+        
+        <!-- Dynamic content placeholder -->
+        <div id="app-content"></div>
+        
+        <!-- Fallback content for offline -->
+        <div id="offline-fallback" style="display: none;">
+          <h2>Offline Mode</h2>
+          <p>You're viewing cached content. Some features may not be available.</p>
+        </div>
       </main>
       
       <footer role="contentinfo">
@@ -79,43 +93,91 @@
       </footer>
     </div>
 
-    <!-- External Libraries -->
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <!-- External Libraries with fallback -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+      integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+      crossorigin=""></script>
+    <script>
+      if (typeof L === 'undefined') {
+        document.write('<script src="/public/libs/leaflet.js"><\/script>');
+      }
+    </script>
     
     <!-- App Scripts -->
     <script src="/scripts/index.js" type="module"></script>
     
-    <!-- Register Service Worker -->
+    <!-- PWA Installation and Service Worker Registration -->
     <script>
+      // Service Worker Registration
       if ('serviceWorker' in navigator) {
-        window.addEventListener('load', () => {
-          navigator.serviceWorker.register('/sw.js')
-            .then(registration => {
-              console.log('ServiceWorker registration successful');
+        window.addEventListener('load', async () => {
+          try {
+            const registration = await navigator.serviceWorker.register('/sw.js');
+            console.log('ServiceWorker registration successful with scope: ', registration.scope);
+            
+            // Track installation state
+            let deferredPrompt;
+            const installButton = document.getElementById('install-button');
+            
+            window.addEventListener('beforeinstallprompt', (e) => {
+              // Prevent the mini-infobar from appearing on mobile
+              e.preventDefault();
+              // Stash the event so it can be triggered later
+              deferredPrompt = e;
+              // Show the install button
+              installButton.style.display = 'block';
               
-              // Check if the app is launched from homescreen
-              if (window.matchMedia('(display-mode: standalone)').matches) {
-                console.log('Launched as PWA');
-              }
-            })
-            .catch(err => {
-              console.log('ServiceWorker registration failed: ', err);
+              installButton.addEventListener('click', async () => {
+                // Show the install prompt
+                deferredPrompt.prompt();
+                // Wait for the user to respond to the prompt
+                const { outcome } = await deferredPrompt.userChoice;
+                console.log(`User response to the install prompt: ${outcome}`);
+                // Hide the install button
+                deferredPrompt = null;
+                installButton.style.display = 'none';
+              });
             });
+            
+            window.addEventListener('appinstalled', () => {
+              console.log('PWA was installed');
+              installButton.style.display = 'none';
+              deferredPrompt = null;
+            });
+            
+            // Check if launched as PWA
+            if (window.matchMedia('(display-mode: standalone)').matches) {
+              console.log('Launched as PWA');
+            }
+            
+            // Network status detection
+            const updateOnlineStatus = () => {
+              const offlineNotification = document.getElementById('offline-notification');
+              const offlineFallback = document.getElementById('offline-fallback');
+              const appContent = document.getElementById('app-content');
+              
+              if (navigator.onLine) {
+                offlineNotification.style.display = 'none';
+                offlineFallback.style.display = 'none';
+                appContent.style.display = 'block';
+              } else {
+                offlineNotification.style.display = 'block';
+                // Show offline fallback if no dynamic content is loaded
+                if (appContent.innerHTML.trim() === '') {
+                  offlineFallback.style.display = 'block';
+                  appContent.style.display = 'none';
+                }
+              }
+            };
+            
+            window.addEventListener('online', updateOnlineStatus);
+            window.addEventListener('offline', updateOnlineStatus);
+            updateOnlineStatus(); // Initial check
+            
+          } catch (error) {
+            console.error('ServiceWorker registration failed: ', error);
+          }
         });
-        
-        // Network status detection
-        window.addEventListener('online', () => {
-          document.getElementById('offline-notification').style.display = 'none';
-        });
-        
-        window.addEventListener('offline', () => {
-          document.getElementById('offline-notification').style.display = 'block';
-        });
-        
-        // Initial network status check
-        if (!navigator.onLine) {
-          document.getElementById('offline-notification').style.display = 'block';
-        }
       }
     </script>
   </body>
