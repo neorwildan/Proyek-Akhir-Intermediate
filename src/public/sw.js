@@ -1,294 +1,320 @@
-const APP_VERSION = '1.0.3';
-const CACHE_NAME = `story-app-cache-v${APP_VERSION}`;
-const RUNTIME_CACHE = 'runtime-cache-v3';
-const OFFLINE_CACHE = 'offline-cache-v3';
-const HOME_CACHE = 'home-cache-v2';
-const API_CACHE = 'api-cache-v1';
+import '../styles/styles.css';
+import App from './pages/app';
+import StoryApiService from './data/api';
+import AuthService from './data/auth';
 
-// Precached assets - App Shell + Critical Resources
-const PRECACHE_ASSETS = [
-  '/',
-  '/index.html',
-  '/offline.html',
-  '/styles/styles.css',
-  '/scripts/index.js',
-  '/scripts/app.js',
-  '/scripts/routes/routes.js',
-  '/scripts/pages/home-page.js',
-  '/public/images/icon-192x192.png',
-  '/public/images/icon-512x512.png',
-  '/public/images/logo.png',
-  '/public/images/default-avatar.png',
-  '/favicon.png',
-  '/manifest.json'
-];
+// Referensi elemen aplikasi dengan pengecekan null
+const elements = {
+  content: () => document.querySelector('#main-content'),
+  drawerButton: () => document.querySelector('#drawer-button'),
+  navigationDrawer: () => document.querySelector('#navigation-drawer'),
+  offlineNotification: () => document.getElementById('offline-notification'),
+  installButton: () => document.getElementById('install-button'),
+  footer: () => document.querySelector('footer')
+};
 
-// Home-specific assets
-const HOME_ASSETS = [
-  '/',
-  '/index.html',
-  '/styles/styles.css',
-  '/scripts/home-page.js',
-  '/public/images/logo.png'
-];
+// State aplikasi
+const appState = {
+  appInstance: null,
+  deferredPrompt: null,
+  isOnline: navigator.onLine,
+  swRegistration: null
+};
 
-// External resources
-const EXTERNAL_RESOURCES = [
-  'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css',
-  'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js'
-];
-
-// ================= INSTALL =================
-self.addEventListener('install', (event) => {
-  console.log('[SW] Installing version', APP_VERSION);
-  event.waitUntil(
-    caches.open(HOME_CACHE)
-      .then(cache => {
-        console.log('[SW] Caching home assets');
-        return cache.addAll(HOME_ASSETS);
-      })
-      .then(() => caches.open(CACHE_NAME))
-      .then(cache => {
-        console.log('[SW] Caching core assets');
-        return cache.addAll(PRECACHE_ASSETS);
-      })
-      .then(() => {
-        console.log('[SW] Caching external resources');
-        return caches.open(RUNTIME_CACHE)
-          .then(cache => cache.addAll(EXTERNAL_RESOURCES));
-      })
-      .then(() => self.skipWaiting())
-  );
-});
-
-// ================= ACTIVATE =================
-self.addEventListener('activate', (event) => {
-  console.log('[SW] Activating new version');
-  const cacheWhitelist = [CACHE_NAME, RUNTIME_CACHE, OFFLINE_CACHE, HOME_CACHE, API_CACHE];
-  
-  event.waitUntil(
-    caches.keys().then(cacheNames => {
-      return Promise.all(
-        cacheNames
-          .filter(name => !cacheWhitelist.includes(name))
-          .map(name => {
-            console.log('[SW] Deleting old cache', name);
-            return caches.delete(name);
-          })
-      );
-    }).then(() => {
-      console.log('[SW] Claiming clients');
-      return self.clients.claim();
-    })
-  );
-});
-
-// ================= FETCH HANDLER =================
-self.addEventListener('fetch', (event) => {
-  const { request } = event;
-  const url = new URL(request.url);
-
-  // Skip non-GET requests
-  if (request.method !== 'GET') return;
-
-  // Home page cache-first strategy
-  if (url.pathname === '/' || url.pathname === '/index.html') {
-    event.respondWith(
-      caches.match(request, { cacheName: HOME_CACHE })
-        .then(cached => cached || fetch(request))
-        .catch(() => caches.match('/offline.html'))
-    );
-    return;
-  }
-
-  // API endpoints - with IndexedDB fallback
-  if (url.pathname === '/api/stories') {
-    event.respondWith(
-      fetch(request)
-        .then(response => {
-          // Cache API response
-          const clone = response.clone();
-          caches.open(API_CACHE)
-            .then(cache => cache.put(request, clone));
-          return response;
-        })
-        .catch(async () => {
-          // Fallback 1: Check runtime cache
-          const cached = await caches.match(request);
-          if (cached) return cached;
-          
-          // Fallback 2: Request from client via IndexedDB
-          const clients = await self.clients.matchAll();
-          clients.forEach(client => {
-            client.postMessage({
-              type: 'get-offline-stories'
-            });
-          });
-          
-          // Return empty array as temporary response
-          return new Response(JSON.stringify([]), {
-            headers: { 'Content-Type': 'application/json' }
-          });
-        })
-    );
-    return;
-  }
-
-  // Other API endpoints (network first)
-  if (url.pathname.startsWith('/api/')) {
-    event.respondWith(
-      fetch(request)
-        .then(response => {
-          const clone = response.clone();
-          caches.open(API_CACHE)
-            .then(cache => cache.put(request, clone));
-          return response;
-        })
-        .catch(() => caches.match(request))
-    );
-    return;
-  }
-
-  // Static assets (cache first)
-  if (['style', 'script', 'font', 'image'].includes(request.destination)) {
-    event.respondWith(
-      caches.match(request)
-        .then(cached => {
-          if (cached) return cached;
-          
-          // Special handling for images
-          if (request.destination === 'image') {
-            return fetch(request).catch(() => {
-              return caches.match('/public/images/default-avatar.png');
-            });
-          }
-          
-          return fetch(request);
-        })
-    );
-    return;
-  }
-
-  // Default network first for other pages
-  event.respondWith(
-    fetch(request)
-      .catch(() => caches.match('/offline.html'))
-  );
-});
-
-// ================= MESSAGE HANDLER =================
-self.addEventListener('message', (event) => {
-  // Handle IndexedDB response for offline stories
-  if (event.data.type === 'offline-stories-response') {
-    console.log('[SW] Received offline stories from client');
-    const response = new Response(JSON.stringify(event.data.stories), {
-      headers: { 'Content-Type': 'application/json' }
-    });
-    
-    event.waitUntil(
-      caches.open(API_CACHE)
-        .then(cache => cache.put('/api/stories', response))
-    );
-  }
-
-  // Handle story caching from client
-  if (event.data.type === 'cache-story') {
-    const { storyId, storyData } = event.data;
-    const url = `/api/stories/${storyId}`;
-    const response = new Response(JSON.stringify(storyData), {
-      headers: { 'Content-Type': 'application/json' }
-    });
-    
-    console.log(`[SW] Caching story ${storyId}`);
-    event.waitUntil(
-      caches.open(RUNTIME_CACHE)
-        .then(cache => cache.put(url, response))
-    );
-  }
-});
-
-// ================= BACKGROUND SYNC =================
-self.addEventListener('sync', (event) => {
-  if (event.tag === 'sync-stories') {
-    console.log('[SW] Background sync triggered');
-    event.waitUntil(
-      syncStories().then(() => {
-        return self.clients.matchAll().then(clients => {
-          clients.forEach(client => {
-            client.postMessage({ type: 'sync-completed' });
-          });
-        });
-      })
-    );
-  }
-});
-
-async function syncStories() {
-  // Implement your story synchronization logic here
+// Fungsi untuk menampilkan notifikasi toast
+function showToast(message, options = {}) {
   try {
-    const cache = await caches.open(RUNTIME_CACHE);
-    const requests = await cache.keys();
-    const storyRequests = requests.filter(req => 
-      req.url.includes('/api/stories/')
-    );
-    
-    // Process each cached story
-    for (const request of storyRequests) {
-      const response = await cache.match(request);
-      if (response) {
-        const story = await response.json();
-        // Try to sync with server
-        // await syncStoryWithServer(story);
-      }
+    if (appState.appInstance?.showToast && typeof appState.appInstance.showToast === 'function') {
+      appState.appInstance.showToast(message, options);
+    } else {
+      console.log('Toast:', message);
+      const toast = document.createElement('div');
+      toast.className = `fallback-toast ${options.type || 'info'}`;
+      toast.textContent = message;
+      toast.style.cssText = `
+        position: fixed;
+        bottom: 20px;
+        left: 50%;
+        transform: translateX(-50%);
+        padding: 12px 24px;
+        background: ${options.type === 'error' ? '#ff4444' : '#333'};
+        color: white;
+        border-radius: 4px;
+        z-index: 1000;
+        animation: fadeIn 0.3s;
+      `;
+      document.body.appendChild(toast);
+      setTimeout(() => {
+        toast.style.animation = 'fadeOut 0.3s';
+        setTimeout(() => toast.remove(), 300);
+      }, options.duration || 3000);
     }
-    
-    console.log('[SW] Background sync completed');
   } catch (error) {
-    console.error('[SW] Background sync failed:', error);
+    console.error('Toast error:', error);
   }
 }
 
-// ================= PUSH NOTIFICATIONS =================
-self.addEventListener('push', (event) => {
-  const payload = event.data?.json() || {
-    title: 'New Story Available',
-    body: 'Check out the latest story!',
-    icon: '/public/images/icon-192x192.png',
-    badge: '/public/images/badge.png',
-    data: { url: '/' }
-  };
-
-  event.waitUntil(
-    self.registration.showNotification(payload.title, {
-      body: payload.body,
-      icon: payload.icon,
-      badge: payload.badge,
-      data: payload.data,
-      vibrate: [200, 100, 200]
-    })
-  );
-});
-
-self.addEventListener('notificationclick', (event) => {
-  event.notification.close();
-  const urlToOpen = new URL(event.notification.data?.url || '/', self.location.origin).href;
-
-  event.waitUntil(
-    clients.matchAll({
-      type: 'window',
-      includeUncontrolled: true
-    }).then(clients => {
-      // Focus existing client if available
-      for (const client of clients) {
-        if (client.url === urlToOpen && 'focus' in client) {
-          return client.focus();
-        }
+// Handler status jaringan dengan debouncing
+let networkStatusDebounce;
+function handleNetworkStatusChange(online) {
+  clearTimeout(networkStatusDebounce);
+  networkStatusDebounce = setTimeout(() => {
+    try {
+      if (appState.appInstance?.onNetworkStatusChange && 
+          typeof appState.appInstance.onNetworkStatusChange === 'function') {
+        appState.appInstance.onNetworkStatusChange(online);
       }
       
-      // Open new window if none exists
-      if (clients.openWindow) {
-        return clients.openWindow(urlToOpen);
+      const notification = elements.offlineNotification();
+      if (notification) {
+        notification.style.display = online ? 'none' : 'flex';
+        notification.textContent = online ? '' : 'Anda sedang offline, beberapa fitur dibatasi';
       }
-    })
-  );
-});
+      
+      appState.isOnline = online;
+      
+      if (online) {
+        showToast('Koneksi internet pulih', { type: 'success', duration: 2000 });
+      }
+    } catch (error) {
+      console.error('Error handler status jaringan:', error);
+    }
+  }, 300);
+}
+
+// ========== PWA Installation ========== //
+function setupPWAInstallation() {
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    appState.deferredPrompt = e;
+    const button = elements.installButton();
+    if (button) {
+      button.style.display = 'block';
+      button.addEventListener('click', async () => {
+        try {
+          if (appState.deferredPrompt) {
+            const result = await appState.deferredPrompt.prompt();
+            if (result.outcome === 'accepted') {
+              showToast('Aplikasi berhasil diinstal!', { type: 'success' });
+            }
+            appState.deferredPrompt = null;
+          }
+        } catch (error) {
+          console.error('Gagal menginstal:', error);
+        }
+      });
+    }
+  });
+
+  window.addEventListener('appinstalled', () => {
+    const button = elements.installButton();
+    if (button) button.style.display = 'none';
+    showToast('Aplikasi berhasil diinstal!', { type: 'success' });
+  });
+}
+
+// ========== Network Detection ========== //
+function setupNetworkDetection() {
+  const updateStatus = () => {
+    const online = navigator.onLine;
+    if (online !== appState.isOnline) {
+      handleNetworkStatusChange(online);
+    }
+  };
+
+  window.addEventListener('online', updateStatus);
+  window.addEventListener('offline', updateStatus);
+  
+  updateStatus();
+}
+
+// ========== Authentication ========== //
+function updateNavigation() {
+  try {
+    const navList = document.getElementById('nav-list');
+    if (!navList) return;
+
+    const isAuthenticated = AuthService.isAuthenticated();
+    const authLinks = navList.querySelectorAll('a[href^="#/login"], a[href^="#/logout"]');
+
+    authLinks.forEach(link => {
+      if (isAuthenticated) {
+        link.textContent = 'Keluar';
+        link.href = '#/logout';
+        link.id = 'logout-button';
+      } else {
+        link.textContent = 'Masuk';
+        link.href = '#/login';
+        link.removeAttribute('id');
+      }
+    });
+  } catch (error) {
+    console.error('Error update navigasi:', error);
+  }
+}
+
+function setupLogoutButton() {
+  document.addEventListener('click', (e) => {
+    if (e.target.closest('#logout-button')) {
+      e.preventDefault();
+      try {
+        AuthService.logout();
+        updateNavigation();
+        window.location.hash = '#/';
+        if (appState.appInstance?.renderPage && typeof appState.appInstance.renderPage === 'function') {
+          appState.appInstance.renderPage();
+        }
+        showToast('Berhasil keluar', { type: 'success' });
+      } catch (error) {
+        console.error('Gagal keluar:', error);
+      }
+    }
+  });
+}
+
+// ========== Service Worker ========== //
+async function registerServiceWorker() {
+  if ('serviceWorker' in navigator) {
+    try {
+      appState.swRegistration = await navigator.serviceWorker.register('/sw.js', {
+        scope: '/',
+        updateViaCache: 'none'
+      });
+      
+      appState.swRegistration.addEventListener('updatefound', () => {
+        const newWorker = appState.swRegistration.installing;
+        newWorker.addEventListener('statechange', () => {
+          if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+            showToast('Versi baru tersedia! Segarkan untuk memperbarui.', {
+              type: 'info',
+              duration: 5000,
+              action: {
+                text: 'Segarkan',
+                callback: () => window.location.reload()
+              }
+            });
+          }
+        });
+      });
+
+      setInterval(() => {
+        appState.swRegistration.update().catch(err => 
+          console.debug('Pembaruan SW gagal:', err)
+        );
+      }, 6 * 60 * 60 * 1000);
+
+      navigator.serviceWorker.addEventListener('message', (event) => {
+        if (event.data.type === 'sync-completed') {
+          showToast('Data berhasil disinkronisasi', { type: 'success' });
+          if (appState.appInstance?.renderPage) {
+            appState.appInstance.renderPage();
+          }
+        }
+      });
+
+    } catch (error) {
+      console.error('Registrasi SW gagal:', error);
+    }
+  }
+}
+
+// ========== App Initialization ========== //
+async function initApp() {
+  try {
+    document.body.classList.add('app-loading');
+
+    await registerServiceWorker();
+
+    setupPWAInstallation();
+    setupNetworkDetection();
+    updateNavigation();
+    setupLogoutButton();
+
+    appState.appInstance = new App({
+      content: elements.content(),
+      drawerButton: elements.drawerButton(),
+      navigationDrawer: elements.navigationDrawer()
+    });
+
+    try {
+      await Promise.race([
+        StoryApiService.testConnection(),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Connection timeout')), 10000)
+        )
+      ]);
+    } catch (error) {
+      console.warn('Peringatan tes koneksi:', error);
+      if (!appState.isOnline) {
+        showToast('Anda sedang offline, beberapa fitur dibatasi', { 
+          type: 'warning',
+          duration: 5000
+        });
+      }
+    }
+
+    const footer = elements.footer();
+    if (footer) {
+      footer.innerHTML = `
+        <div class="footer-content">
+          <p>&copy; ${new Date().getFullYear()} Story App v${process.env.APP_VERSION || '1.0.0'}</p>
+          <button id="install-button" class="install-button" aria-label="Install app">
+            <span>Instal Aplikasi</span>
+          </button>
+        </div>
+      `;
+    }
+
+  } catch (error) {
+    console.error('Error inisialisasi aplikasi:', error);
+  } finally {
+    document.body.classList.remove('app-loading');
+  }
+}
+
+// Start the app
+if (document.readyState === 'complete' || 
+    (document.readyState !== 'loading' && !document.documentElement.doScroll)) {
+  initApp();
+} else {
+  document.addEventListener('DOMContentLoaded', initApp);
+}
+
+// Global functions
+window.refreshApp = () => {
+  if (appState.appInstance?.renderPage && typeof appState.appInstance.renderPage === 'function') {
+    appState.appInstance.renderPage();
+  }
+};
+
+window.installPWA = () => {
+  if (appState.deferredPrompt) {
+    appState.deferredPrompt.prompt()
+      .then(result => {
+        if (result.outcome === 'accepted') {
+          showToast('Proses instalasi dimulai', { type: 'success' });
+        }
+      })
+      .catch(error => {
+        console.error('Gagal menginstal:', error);
+      });
+  } else {
+    console.log('Instalasi tidak tersedia');
+  }
+};
+
+// Export untuk testing
+if (process.env.NODE_ENV === 'test') {
+  module.exports = {
+    elements,
+    appState,
+    showToast,
+    handleNetworkStatusChange,
+    setupPWAInstallation,
+    setupNetworkDetection,
+    updateNavigation,
+    setupLogoutButton,
+    registerServiceWorker,
+    initApp
+  };
+}

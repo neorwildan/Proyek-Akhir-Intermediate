@@ -289,21 +289,14 @@ export default class HomePage {
   }
 
   async _handleDeleteStory(storyId) {
+    if (!storyId) return;
+
+    const modal = document.getElementById('delete-modal');
+    modal.classList.add('hidden');
+
     try {
-      if (this._pendingDeletions.has(storyId)) {
-        NotificationUtils.showToast('Deletion already in progress');
-        return;
-      }
-
-      this._pendingDeletions.add(storyId);
       this._showLoading(true);
-
-      // Update UI immediately
-      const storyElement = document.querySelector(`.story-card[data-id="${storyId}"]`);
-      if (storyElement) {
-        storyElement.classList.add('deleting');
-      }
-
+      
       if (navigator.onLine) {
         // Online deletion
         await StoryApiService.deleteStory(storyId, AuthService.getToken());
@@ -316,26 +309,20 @@ export default class HomePage {
       }
 
       // Remove from view
+      const storyElement = document.querySelector(`.story-card[data-id="${storyId}"]`);
       if (storyElement) {
         storyElement.remove();
       }
 
-      // Update map
-      this._initMap(await this._getFilteredStories());
+      // Reload stories to update the map
+      await this._loadStories();
 
     } catch (error) {
       console.error('Delete failed:', error);
       NotificationUtils.showToast('Failed to delete story. Please try again.');
-      
-      // Reset UI if failed
-      const storyElement = document.querySelector(`.story-card[data-id="${storyId}"]`);
-      if (storyElement) {
-        storyElement.classList.remove('deleting');
-      }
     } finally {
-      this._pendingDeletions.delete(storyId);
       this._showLoading(false);
-      document.getElementById('delete-modal').classList.add('hidden');
+      this._currentDeleteStoryId = null;
     }
   }
 

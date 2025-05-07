@@ -5,6 +5,8 @@ import RegisterPage from '../pages/register-page';
 import AddStoryPage from '../pages/add-story-page';
 import GuestAddStoryPage from '../pages/guest-add-story-page';
 import DetailStoryPage from '../pages/detail-story-page';
+import { getActiveRoute } from '../routes/url-parser';
+import NotFoundPage from '../pages/not-found-page';
 
 const routes = {
   '/': HomePage,
@@ -14,6 +16,15 @@ const routes = {
   '/add-story': AddStoryPage,
   '/add-story/guest': GuestAddStoryPage,
   '/detail': DetailStoryPage
+};
+
+const Router = async () => {
+  const url = getActiveRoute();  // Ganti ini
+  const page = routes[url] || NotFoundPage;
+  const mainContent = document.querySelector('#mainContent');
+  
+  mainContent.innerHTML = await page.render();
+  await page.afterRender();
 };
 
 export default routes;

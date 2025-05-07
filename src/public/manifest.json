@@ -34,15 +34,17 @@
     ],
     "screenshots": [
       {
-        "src": "/public/images/screenshot1.png",
-        "sizes": "1280x720",
+        "src": "/images/screenshot-desktop.png",
+        "sizes": "1280x800",
         "type": "image/png",
+        "form_factor": "wide",
         "description": "Halaman utama Story App"
       },
       {
-        "src": "/public/images/screenshot2.png",
-        "sizes": "1280x720",
+        "src": "/images/screenshot-mobile.png",
+        "sizes": "360x640",
         "type": "image/png",
+        "form_factor": "narrow",
         "description": "Tambah cerita baru"
       }
     ],
