@@ -4,6 +4,7 @@ const { merge } = require('webpack-merge');
 
 module.exports = merge(common, {
   mode: 'development',
+  devtool: 'eval-source-map', // Tambahkan source map untuk development
   module: {
     rules: [
       {
@@ -18,6 +19,9 @@ module.exports = merge(common, {
   devServer: {
     static: path.resolve(__dirname, 'dist'),
     port: 9000,
+    hot: true, // Aktifkan HMR
+    compress: true,
+    historyApiFallback: true, // Penting untuk Single Page Application
     client: {
       overlay: {
         errors: true,

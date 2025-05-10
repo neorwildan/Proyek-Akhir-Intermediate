@@ -253,7 +253,7 @@ async function initApp() {
         StoryApiService.testConnection(),
         new Promise((_, reject) => 
           setTimeout(() => reject(new Error('Connection timeout')), 10000)
-      )
+        )
       ]);
     } catch (error) {
       console.warn('Connection test warning:', error);
